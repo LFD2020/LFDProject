@@ -28,26 +28,22 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
 
         self.__negative_weight = negative_weight
 
+    @classmethod
+    def __efficient_bi_interaction(
+            cls, __features_embeddings: torch.Tensor,
+            __features_nonzero_one_hot_indexes: list
+    ) -> torch.Tensor:
+        """ Implement the efficient f_BI corresponding to Equation(14) in the paper """
+        return 0.5 * (
+                torch.square(torch.sum(__features_embeddings[__features_nonzero_one_hot_indexes], dim=0)) -
+                torch.sum(torch.square(__features_embeddings[__features_nonzero_one_hot_indexes]), dim=0)
+        )
+
     def __build_p_u(
             self, user_features_embeddings: torch.Tensor,
             user_features_nonzero_one_hot_indexes: list,
     ) -> torch.Tensor:
-        def __bi_interaction(
-                __features_embeddings: torch.Tensor,
-                __features_nonzero_one_hot_indexes: list
-        ) -> torch.Tensor:
-            """ Implement the f_BI in the paper """
-            result: torch.Tensor = torch.zeros(
-                __features_embeddings.size(1)
-            )
-            __features_nonzero_one_hot_indexes: list = \
-                sorted(__features_nonzero_one_hot_indexes)
-            for i in range(len(__features_nonzero_one_hot_indexes)):
-                for j in range(i + 1, len(__features_nonzero_one_hot_indexes)):
-                    result += torch.mul(
-                        __features_embeddings[i], __features_embeddings[j]
-                    )
-            return result
+        """ build p_u """
 
         ''' Generate p_{u,d} '''
         p_ud: torch.Tensor = torch.sum(
@@ -59,7 +55,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
             p_ud,
             torch.matmul(
                 self.__h1.t(),
-                __bi_interaction(
+                self.__efficient_bi_interaction(
                     user_features_embeddings,
                     user_features_nonzero_one_hot_indexes
                 )
@@ -75,22 +71,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
             self, item_features_embeddings: torch.Tensor,
             item_features_nonzero_one_hot_indexes: list
     ) -> torch.Tensor:
-        def __bi_interaction(
-                __features_embeddings: torch.Tensor,
-                __features_nonzero_one_hot_indexes: list
-        ) -> torch.Tensor:
-            """ Implement the f_BI in the paper """
-            result: torch.Tensor = torch.zeros(
-                __features_embeddings.size(1)
-            )
-            __features_nonzero_one_hot_indexes: list = \
-                sorted(__features_nonzero_one_hot_indexes)
-            for i in range(len(__features_nonzero_one_hot_indexes)):
-                for j in range(i + 1, len(__features_nonzero_one_hot_indexes)):
-                    result += torch.mul(
-                        __features_embeddings[i], __features_embeddings[j]
-                    )
-            return result
+        """ build q_v """
 
         ''' Generate q_{v,d} '''
         q_vd: torch.Tensor = torch.sum(
@@ -103,7 +84,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
             torch.ones(1),
             torch.matmul(
                 self.__h1.t(),
-                __bi_interaction(
+                self.__efficient_bi_interaction(
                     item_features_embeddings,
                     item_features_nonzero_one_hot_indexes
                 )
