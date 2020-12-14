@@ -148,19 +148,13 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
         __all_users_p_matrix: torch.Tensor = torch.stack(
             [__current_p_u for __current_p_u in __users_p_u_pool.values()]
         )
-        __all_users_p_matrix: torch.Tensor = torch.split(
-            __all_users_p_matrix, [__all_users_p_matrix.size(1) - 2, 2], dim=1
-        )[0]
         __all_items_q_matrix: torch.Tensor = torch.stack(
             [__current_q_v for __current_q_v in __items_q_v_pool.values()]
         )
-        __all_items_q_matrix: torch.Tensor = torch.split(
-            __all_items_q_matrix, [__all_items_q_matrix.size(1) - 2, 2], dim=1
-        )[0]
         __intermediate_matrix: torch.Tensor = torch.mul(
             torch.mm(
-                self.__h2.reshape((-1, 1)),
-                self.__h2.reshape((1, -1))
+                torch.cat([self.__h2, torch.ones(2)]).reshape((-1, 1)),
+                torch.cat([self.__h2, torch.ones(2)]).reshape((1, -1))
             ),
             torch.mul(
                 torch.mm(__all_users_p_matrix.t(), __all_users_p_matrix),
