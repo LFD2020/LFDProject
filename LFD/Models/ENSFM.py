@@ -92,7 +92,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
                 self.__item_first_order_feature_interaction_weight[
                     item_features_nonzero_one_hot_indexes
                 ]
-            )
+            ).reshape(-1)
         ])
 
     def __compute_loss_with_multiprocessing(
@@ -209,31 +209,24 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
                 _typing.Tuple[int, _typing.List[int]]
             ]
     ) -> _typing.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        import multiprocessing
-
-        __users_pu_async_results: _typing.Dict[int, multiprocessing.pool.AsyncResult] = {}
-        __items_qv_async_results: _typing.Dict[int, multiprocessing.pool.AsyncResult] = {}
-        with multiprocessing.Pool() as pool:
-            for __user_id, __current_user_nonzero_indexes_of_features \
-                    in batch_users_nonzero_indexes_of_features:
-                __users_pu_async_results[__user_id] = pool.apply_async(
-                    self._build_p_u,
-                    (user_features_embeddings, __current_user_nonzero_indexes_of_features)
-                )
-            for __item_id, __current_item_nonzero_indexes_of_features \
-                    in all_items_nonzero_indexes_of_features:
-                __items_qv_async_results[__item_id] = pool.apply_async(
-                    self._build_q_v,
-                    (item_features_embeddings, __current_item_nonzero_indexes_of_features)
-                )
-            pool.close()
-            pool.join()
+        __users_pu_pool: _typing.Dict[int, torch.Tensor] = {}
+        __items_qv_pool: _typing.Dict[int, torch.Tensor] = {}
+        for __user_id, __current_user_nonzero_indexes_of_features \
+                in batch_users_nonzero_indexes_of_features:
+            __users_pu_pool[__user_id] = self._build_p_u(
+                user_features_embeddings, __current_user_nonzero_indexes_of_features
+            )
+        for __item_id, __current_item_nonzero_indexes_of_features \
+                in all_items_nonzero_indexes_of_features:
+            __items_qv_pool[__item_id] = self._build_q_v(
+                item_features_embeddings, __current_item_nonzero_indexes_of_features
+            )
         batch_users_p_matrix: torch.Tensor = torch.stack([
-            __users_pu_async_results[__user_id].get()
+            __users_pu_pool[__user_id]
             for __user_id, __ in batch_users_nonzero_indexes_of_features
         ])
         all_items_q_matrix: torch.Tensor = torch.stack([
-            __items_qv_async_results[__item_id].get()
+            __items_qv_pool[__item_id]
             for __item_id, __ in all_items_nonzero_indexes_of_features
         ])
         return batch_users_p_matrix, all_items_q_matrix, self.__h2
