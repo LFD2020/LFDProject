@@ -39,7 +39,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
                 torch.sum(torch.square(__features_embeddings[__features_nonzero_one_hot_indexes]), dim=0)
         )
 
-    def __build_p_u(
+    def _build_p_u(
             self, user_features_embeddings: torch.Tensor,
             user_features_nonzero_one_hot_indexes: list,
     ) -> torch.Tensor:
@@ -67,7 +67,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
             torch.ones(1)
         ])
 
-    def __build_q_v(
+    def _build_q_v(
             self, item_features_embeddings: torch.Tensor,
             item_features_nonzero_one_hot_indexes: list
     ) -> torch.Tensor:
@@ -115,7 +115,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
                     __user_id: int,
                     __user_features_nonzero_one_hot_indexes: list
             ) -> None:
-                __users_p_u_pool[__user_id] = self.__build_p_u(
+                __users_p_u_pool[__user_id] = self._build_p_u(
                     user_features_embeddings,
                     __user_features_nonzero_one_hot_indexes
                 )
@@ -124,7 +124,7 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
                     __item_id: int,
                     __item_features_nonzero_one_hot_indexes: list
             ) -> None:
-                __items_q_v_pool[__item_id] = self.__build_q_v(
+                __items_q_v_pool[__item_id] = self._build_q_v(
                     item_features_embeddings,
                     __item_features_nonzero_one_hot_indexes
                 )
@@ -197,3 +197,104 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
             ).sum()
         assert loss.size() == (1,)
         return loss
+
+    def forward(
+            self,
+            user_features_embeddings: torch.Tensor,
+            item_features_embeddings: torch.Tensor,
+            batch_users_nonzero_indexes_of_features: _typing.List[
+                _typing.Tuple[int, _typing.List[int]]
+            ],
+            all_items_nonzero_indexes_of_features: _typing.List[
+                _typing.Tuple[int, _typing.List[int]]
+            ]
+    ) -> _typing.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        import multiprocessing
+
+        __users_pu_async_results: _typing.Dict[int, multiprocessing.pool.AsyncResult] = {}
+        __items_qv_async_results: _typing.Dict[int, multiprocessing.pool.AsyncResult] = {}
+        with multiprocessing.Pool() as pool:
+            for __user_id, __current_user_nonzero_indexes_of_features \
+                    in batch_users_nonzero_indexes_of_features:
+                __users_pu_async_results[__user_id] = pool.apply_async(
+                    self._build_p_u,
+                    (user_features_embeddings, __current_user_nonzero_indexes_of_features)
+                )
+            for __item_id, __current_item_nonzero_indexes_of_features \
+                    in all_items_nonzero_indexes_of_features:
+                __items_qv_async_results[__item_id] = pool.apply_async(
+                    self._build_q_v,
+                    (item_features_embeddings, __current_item_nonzero_indexes_of_features)
+                )
+            pool.close()
+            pool.join()
+        batch_users_p_matrix: torch.Tensor = torch.stack([
+            __users_pu_async_results[__user_id].get()
+            for __user_id, __ in batch_users_nonzero_indexes_of_features
+        ])
+        all_items_q_matrix: torch.Tensor = torch.stack([
+            __items_qv_async_results[__item_id].get()
+            for __item_id, __ in all_items_nonzero_indexes_of_features
+        ])
+        return batch_users_p_matrix, all_items_q_matrix, self.__h2
+
+    class Loss(torch.nn.Module):
+        @classmethod
+        def _compute_partial_loss_for_one_interaction(
+                cls, pu: torch.Tensor, qv: torch.Tensor,
+                h2: torch.Tensor, negative_weight: torch.Tensor
+        ) -> torch.Tensor:
+            __predicted_y: torch.Tensor = torch.matmul(
+                torch.cat([h2, torch.ones(2)]), torch.mul(pu, qv)
+            )
+            assert __predicted_y.size() == (1,)
+            return (1 - negative_weight) * torch.square(__predicted_y) - 2 * __predicted_y
+
+        def forward(
+                self, h2: torch.Tensor,
+                negative_weight: float,
+                all_items_q_matrix: torch.Tensor,
+                batch_users_p_matrix: torch.Tensor,
+                batch_users_with_positive_items: _typing.List[
+                    _typing.Tuple[int, _typing.List[int]]
+                ]
+        ) -> torch.Tensor:
+            if h2.size() != (batch_users_p_matrix.size(1) - 2,):
+                raise ValueError
+            if all_items_q_matrix.size(1) != batch_users_p_matrix.size(1):
+                raise ValueError
+            if batch_users_p_matrix.size(0) != len(batch_users_with_positive_items):
+                raise ValueError
+
+            ''' Compute the first term of loss '''
+            import multiprocessing
+            with multiprocessing.Pool() as pool:
+                __async_results: _typing.List[multiprocessing.pool.AsyncResult] = []
+                for __user_index in range(len(batch_users_with_positive_items)):
+                    for __item_index in batch_users_with_positive_items[__user_index][1]:
+                        __async_results.append(pool.apply_async(
+                            self._compute_partial_loss_for_one_interaction,
+                            (
+                                batch_users_p_matrix[__user_index],
+                                all_items_q_matrix[__item_index],
+                                h2, negative_weight
+                            )
+                        ))
+                pool.close()
+                pool.join()
+                loss: torch.Tensor = \
+                    torch.cat([async_result.get() for async_result in __async_results]).sum()
+            assert loss.size() == (1,)
+            ''' Compute the second term of loss '''
+            __intermediate_matrix: torch.Tensor = torch.mul(
+                torch.mm(
+                    torch.cat([h2, torch.ones(2)]).reshape((-1, 1)),
+                    torch.cat([h2, torch.ones(2)]).reshape((1, -1))
+                ),
+                torch.mul(
+                    torch.mm(batch_users_p_matrix.t(), batch_users_p_matrix),
+                    torch.mm(all_items_q_matrix.t(), all_items_q_matrix)
+                )
+            )
+
+            return loss + negative_weight * __intermediate_matrix.sum()
