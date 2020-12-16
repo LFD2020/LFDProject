@@ -240,7 +240,6 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
             __predicted_y: torch.Tensor = torch.matmul(
                 torch.cat([h2, torch.ones(2)]), torch.mul(pu, qv)
             )
-            assert __predicted_y.size() == (1,)
             return (1 - negative_weight) * torch.square(__predicted_y) - 2 * __predicted_y
 
         def forward(
@@ -260,23 +259,14 @@ class EfficientNonSamplingFactorizationMachines(torch.nn.Module):
                 raise ValueError
 
             ''' Compute the first term of loss '''
-            import multiprocessing
-            with multiprocessing.Pool() as pool:
-                __async_results: _typing.List[multiprocessing.pool.AsyncResult] = []
-                for __user_index in range(len(batch_users_with_positive_items)):
-                    for __item_index in batch_users_with_positive_items[__user_index][1]:
-                        __async_results.append(pool.apply_async(
-                            self._compute_partial_loss_for_one_interaction,
-                            (
-                                batch_users_p_matrix[__user_index],
-                                all_items_q_matrix[__item_index],
-                                h2, negative_weight
-                            )
-                        ))
-                pool.close()
-                pool.join()
-                loss: torch.Tensor = \
-                    torch.cat([async_result.get() for async_result in __async_results]).sum()
+            loss: torch.Tensor = torch.zeros(1)
+            for __user_index in range(len(batch_users_with_positive_items)):
+                for __item_index in batch_users_with_positive_items[__user_index][1]:
+                    loss += self._compute_partial_loss_for_one_interaction(
+                            batch_users_p_matrix[__user_index],
+                            all_items_q_matrix[__item_index],
+                            h2, torch.tensor(negative_weight)
+                        )
             assert loss.size() == (1,)
             ''' Compute the second term of loss '''
             __intermediate_matrix: torch.Tensor = torch.mul(
