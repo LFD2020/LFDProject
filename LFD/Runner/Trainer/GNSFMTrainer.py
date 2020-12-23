@@ -129,15 +129,7 @@ class GraphBasedNonSamplingFactorizationMachinesTrainer:
                 (_user_id, [_user_id, _gender, _age, _occupation])
             )
 
-        self.__epochs: int = 500
-        self.__users_batch_size: int = 1024
         self.__weights_directory_name: str = "G" + "NS" + "FM"
-
-        ''' Set the optimizer and lr_scheduler '''
-        self._optimizer: torch.optim.Optimizer = torch.optim.Adam(self._model.parameters(), 0.05)
-        self._lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
-            self._optimizer, lr_lambda=lambda epoch: 0.9 ** (10.0 * epoch / self.__epochs)
-        )
 
     @classmethod
     def __compute_loss(
@@ -163,18 +155,51 @@ class GraphBasedNonSamplingFactorizationMachinesTrainer:
             batch_users_with_positive_items
         )
 
-    def train(self):
+    def train(self, initial_weights_filename: _typing.Optional[str] = None):
+        if (
+                initial_weights_filename is not None and
+                type(initial_weights_filename) != str
+        ):
+            raise TypeError
+
+        if initial_weights_filename is not None:
+            if type(initial_weights_filename) != str:
+                raise TypeError
+            if not os.path.exists(os.path.join(
+                    self.__weights_directory_name, initial_weights_filename
+            )):
+                raise FileNotFoundError
+            if not os.path.isdir(os.path.join(
+                    self.__weights_directory_name, initial_weights_filename
+            )):
+                raise IsADirectoryError
+            assert os.path.isfile(os.path.join(
+                self.__weights_directory_name, initial_weights_filename
+            ))
+            self._model.load_state_dict(TorchWeightsUtils.load_state_dict(
+                os.path.join(self.__weights_directory_name, initial_weights_filename)
+            ))
+
+        __epochs: int = 1000
+        __users_batch_size: int = 512
+
+        ''' Set the optimizer and lr_scheduler '''
+        _optimizer: torch.optim.Optimizer = torch.optim.Adam(self._model.parameters(), 0.05)
+        _lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            _optimizer, lr_lambda=lambda epoch: 0.9 ** (10.0 * epoch / __epochs)
+        )
+
         data_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
-            _TrainingDataSet(self.__ratings_train_set), self.__users_batch_size,
+            _TrainingDataSet(self.__ratings_train_set), __users_batch_size,
             shuffle=True, collate_fn=lambda data: data
         )
 
-        with tqdm.tqdm(range(self.__epochs)) as epoch_t:
+        with tqdm.tqdm(range(__epochs)) as epoch_t:
             for current_epoch in epoch_t:
                 self._model.train()
                 with tqdm.tqdm(data_loader) as data_loader_t:
                     for batch_users_with_positive_items in data_loader_t:
-                        self._optimizer.zero_grad()
+                        _optimizer.zero_grad()
                         batch_users_p_matrix, all_items_q_matrix, h2 = self._model(
                             self.__normalized_l_matrix,
                             self.__all_users_nonzero_indexes_of_features,
@@ -186,16 +211,18 @@ class GraphBasedNonSamplingFactorizationMachinesTrainer:
                             batch_users_p_matrix,
                             batch_users_with_positive_items
                         )
-                        data_loader_t.set_postfix({"loss": str(loss.item())})
+                        loss_value: float = loss.item()
                         loss.backward()
-                        self._optimizer.step()
-                self._lr_scheduler.step()
+                        epoch_t.set_postfix({"loss": str(loss_value)})
+                        data_loader_t.set_postfix({"loss": str(loss_value)})
+                        _optimizer.step()
+                _lr_scheduler.step()
 
                 if (current_epoch + 1) % 10 == 0:
-                    self._save_weights(current_epoch + 1)
-
-    def _save_weights(self, epoch: int) -> None:
-        TorchWeightsUtils.save_state_dict(
-            self._model.state_dict(),
-            os.path.join(self.__weights_directory_name, "state-snapshot -%d.pt" % epoch)
-        )
+                    TorchWeightsUtils.save_state_dict(
+                        self._model.state_dict(),
+                        os.path.join(
+                            self.__weights_directory_name,
+                            "state-snapshot-%d.pt" % (current_epoch + 1)
+                        )
+                    )
